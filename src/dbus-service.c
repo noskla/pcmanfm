@@ -60,6 +60,64 @@ static guint reg_id = 0;
 static GDBusConnection *dbus_connection = NULL;
 
 static void
+show_folder(FmPath *folder_path)
+{
+    FmMainWin *win = fm_main_win_get_last_active();
+
+    if (win == NULL)
+    {
+        win = fm_main_win_add_win(NULL, folder_path);
+        pcmanfm_ref();
+    }
+    else
+    {
+        fm_main_win_add_tab(win, folder_path);
+    }
+    gtk_window_present(GTK_WINDOW(win));
+}
+
+static gboolean
+uri_strv_to_paths(const gchar * const *uris, GList **paths_out, GError **error)
+{
+    GList *paths = NULL;
+    const gchar * const *p;
+
+    for (p = uris; p && *p; ++p)
+    {
+        FmPath *path = fm_path_new_for_uri(*p);
+        if (path == NULL)
+        {
+            g_set_error(error, G_DBUS_ERROR, G_DBUS_ERROR_INVALID_ARGS,
+                        "Invalid URI: %s", *p);
+            g_list_free_full(paths, (GDestroyNotify)fm_path_unref);
+            return FALSE;
+        }
+        paths = g_list_append(paths, path);
+    }
+    *paths_out = paths;
+    return TRUE;
+}
+
+static void
+handle_show_folders(const gchar * const *uris)
+{
+    GList *paths = NULL, *l;
+    GError *error = NULL;
+
+    if (!uri_strv_to_paths(uris, &paths, &error))
+    {
+        g_warning("ShowFolders: %s", error->message);
+        g_error_free(error);
+        return;
+    }
+
+    for (l = paths; l; l = l->next)
+        show_folder((FmPath*)l->data);
+
+    g_list_free_full(paths, (GDestroyNotify)fm_path_unref);
+}
+
+static void
 handle_method_call(GDBusConnection *connection,
                     const gchar *sender,
                     const gchar *object_path,
@@ -69,10 +127,24 @@ handle_method_call(GDBusConnection *connection,
                     GDBusMethodInvocation *invocation,
                     gpointer user_data)
 {
-    g_dbus_method_invocation_return_error(invocation, G_DBUS_ERROR,
-                                          G_DBUS_ERROR_UNKNOWN_METHOD,
-                                          "Unknown method %s", method_name);
+    gchar **uris = NULL;
+    const gchar *startup_id = NULL;
+
+    if (g_strcmp0(method_name, "ShowFolders") == 0)
+    {
+        g_variant_get(parameters, "(^ass)", &uris, &startup_id);
+        handle_show_folders((const gchar * const *)uris);
+        g_strfreev(uris);
+        g_dbus_method_invocation_return_value(invocation, NULL);
+    }
+    else
+    {
+        g_dbus_method_invocation_return_error(invocation, G_DBUS_ERROR,
+                                              G_DBUS_ERROR_UNKNOWN_METHOD,
+                                              "Unknown method %s", method_name);
+    }
 }
+
 
 static const GDBusInterfaceVTable interface_vtable =
 {
