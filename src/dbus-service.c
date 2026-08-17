@@ -208,6 +208,29 @@ handle_show_folders(const gchar * const *uris)
 }
 
 static void
+handle_show_item_properties(const gchar * const *uris)
+{
+    GList *paths = NULL, *l;
+    GError *error = NULL;
+
+    if (!uri_strv_to_paths(uris, &paths, &error))
+    {
+        g_warning("ShowItemProperties: %s", error->message);
+        g_error_free(error);
+        return;
+    }
+
+    /* Open a window/tab on each item's parent folder as a reasonable
+     * fallback; a full "Properties" dialog implementation is out of scope
+     * for now (only ShowItems is required). */
+    for (l = paths; l; l = l->next)
+        show_and_select_path((FmPath*)l->data);
+
+    g_list_free_full(paths, (GDestroyNotify)fm_path_unref);
+}
+
+
+static void
 handle_method_call(GDBusConnection *connection,
                     const gchar *sender,
                     const gchar *object_path,
@@ -231,6 +254,13 @@ handle_method_call(GDBusConnection *connection,
     {
         g_variant_get(parameters, "(^ass)", &uris, &startup_id);
         handle_show_folders((const gchar * const *)uris);
+        g_strfreev(uris);
+        g_dbus_method_invocation_return_value(invocation, NULL);
+    }
+    else if (g_strcmp0(method_name, "ShowItemProperties") == 0)
+    {
+        g_variant_get(parameters, "(^ass)", &uris, &startup_id);
+        handle_show_item_properties((const gchar * const *)uris);
         g_strfreev(uris);
         g_dbus_method_invocation_return_value(invocation, NULL);
     }
