@@ -116,14 +116,25 @@ show_and_select_path(FmPath *file_path)
     page = win->current_page;
     if (page != NULL)
     {
-        PendingSelect *pending = g_new(PendingSelect, 1);
-        pending->file_path = fm_path_ref(file_path);
-        /* connect first in case the folder is already loaded and the
-         * "loaded" signal has already fired for a re-used tab; also handle
-         * the case it will fire later, asynchronously */
-        g_signal_connect(page, "loaded", G_CALLBACK(on_page_loaded_select), pending);
-        /* try immediately as well in case content is already loaded */
-        select_file_in_page(page, file_path);
+        FmFolder *folder = fm_tab_page_get_folder(page);
+
+        if (folder != NULL && fm_folder_is_loaded(folder))
+        {
+            /* folder is already loaded (e.g. a re-used tab already showing
+             * this directory): the model is ready, so it's safe to select
+             * and scroll to the file right away. */
+            select_file_in_page(page, file_path);
+        }
+        else
+        {
+            /* folder model is not ready yet (freshly created tab/window);
+             * calling select/scroll now would operate on a view that has
+             * no model yet and crash deep inside libfm. Defer until the
+             * "loaded" signal fires once the folder model has been set. */
+            PendingSelect *pending = g_new(PendingSelect, 1);
+            pending->file_path = fm_path_ref(file_path);
+            g_signal_connect(page, "loaded", G_CALLBACK(on_page_loaded_select), pending);
+        }
     }
 
     if (folder_path != file_path)
