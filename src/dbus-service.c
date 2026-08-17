@@ -59,6 +59,77 @@ static guint owner_id = 0;
 static guint reg_id = 0;
 static GDBusConnection *dbus_connection = NULL;
 
+/* pending selection request, tracked while waiting for folder to load */
+typedef struct
+{
+    FmPath *file_path;
+} PendingSelect;
+
+static void
+select_file_in_page(FmTabPage *page, FmPath *file_path)
+{
+    FmFolderView *fv = fm_tab_page_get_folder_view(page);
+    if (fv == NULL)
+        return;
+    fm_folder_view_select_file_path(fv, file_path);
+    fm_folder_view_scroll_to_path(fv, file_path, TRUE);
+}
+
+static void
+on_page_loaded_select(FmTabPage *page, gpointer user_data)
+{
+    PendingSelect *pending = user_data;
+
+    select_file_in_page(page, pending->file_path);
+
+    g_signal_handlers_disconnect_by_func(page, on_page_loaded_select, user_data);
+    fm_path_unref(pending->file_path);
+    g_free(pending);
+}
+
+/* Opens the parent folder of file_path in the last active window (creating
+ * one if necessary), then selects and scrolls to file_path once loaded. */
+static void
+show_and_select_path(FmPath *file_path)
+{
+    FmPath *folder_path = fm_path_get_parent(file_path);
+    FmMainWin *win;
+    FmTabPage *page;
+
+    if (folder_path == NULL)
+        folder_path = file_path; /* e.g. root */
+    else
+        fm_path_ref(folder_path);
+
+    win = fm_main_win_get_last_active();
+    if (win == NULL)
+    {
+        win = fm_main_win_add_win(NULL, folder_path);
+        pcmanfm_ref();
+    }
+    else
+    {
+        fm_main_win_add_tab(win, folder_path);
+    }
+    gtk_window_present(GTK_WINDOW(win));
+
+    page = win->current_page;
+    if (page != NULL)
+    {
+        PendingSelect *pending = g_new(PendingSelect, 1);
+        pending->file_path = fm_path_ref(file_path);
+        /* connect first in case the folder is already loaded and the
+         * "loaded" signal has already fired for a re-used tab; also handle
+         * the case it will fire later, asynchronously */
+        g_signal_connect(page, "loaded", G_CALLBACK(on_page_loaded_select), pending);
+        /* try immediately as well in case content is already loaded */
+        select_file_in_page(page, file_path);
+    }
+
+    if (folder_path != file_path)
+        fm_path_unref(folder_path);
+}
+
 static void
 show_folder(FmPath *folder_path)
 {
@@ -99,6 +170,25 @@ uri_strv_to_paths(const gchar * const *uris, GList **paths_out, GError **error)
 }
 
 static void
+handle_show_items(const gchar * const *uris)
+{
+    GList *paths = NULL, *l;
+    GError *error = NULL;
+
+    if (!uri_strv_to_paths(uris, &paths, &error))
+    {
+        g_warning("ShowItems: %s", error->message);
+        g_error_free(error);
+        return;
+    }
+
+    for (l = paths; l; l = l->next)
+        show_and_select_path((FmPath*)l->data);
+
+    g_list_free_full(paths, (GDestroyNotify)fm_path_unref);
+}
+
+static void
 handle_show_folders(const gchar * const *uris)
 {
     GList *paths = NULL, *l;
@@ -130,7 +220,14 @@ handle_method_call(GDBusConnection *connection,
     gchar **uris = NULL;
     const gchar *startup_id = NULL;
 
-    if (g_strcmp0(method_name, "ShowFolders") == 0)
+    if (g_strcmp0(method_name, "ShowItems") == 0)
+    {
+        g_variant_get(parameters, "(^ass)", &uris, &startup_id);
+        handle_show_items((const gchar * const *)uris);
+        g_strfreev(uris);
+        g_dbus_method_invocation_return_value(invocation, NULL);
+    }
+    else if (g_strcmp0(method_name, "ShowFolders") == 0)
     {
         g_variant_get(parameters, "(^ass)", &uris, &startup_id);
         handle_show_folders((const gchar * const *)uris);
@@ -144,7 +241,6 @@ handle_method_call(GDBusConnection *connection,
                                               "Unknown method %s", method_name);
     }
 }
-
 
 static const GDBusInterfaceVTable interface_vtable =
 {
